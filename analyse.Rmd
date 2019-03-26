@@ -1,0 +1,1241 @@
+---
+title: "Conversion de magnitudes"
+author: "Ariane Ducellier"
+date: "13 janvier 2015"
+output:
+  pdf_document:
+    fig_caption: yes
+  html_document:
+    fig_caption: yes
+    keep_md: yes
+---
+
+```{r, echo=FALSE, warning=FALSE}
+# Chargement des packages
+library(ggplot2)
+library(openxlsx)
+```
+
+```{r, echo=FALSE}
+# D?finition d'une fonction pour la validation crois?e
+R2crossvalid <- function(y, x, freq, n){
+    R2 <- vector(length = n)
+    index <-  runif(length(y))
+    for (i in 1:n){
+        appdata <- data.frame(y = y[index < (i - 1) / n | index > i / n],
+                              x = x[index < (i - 1) / n | index > i / n],
+                              freq = freq[index < (i - 1) / n | index > i / n])
+        predata <- data.frame(y = y[index >= (i - 1) / n & index <= i / n],
+                              x = x[index >= (i - 1) / n & index <= i / n],
+                              freq = freq[index >= (i - 1) / n & index <= i / n])
+        fit <- lm(y ~ x, data = appdata, weights = freq)
+        yhat <- predict(fit, predata)
+        if (length(yhat) > 0 & sum((predata$y - mean(predata$y))^2) != 0){
+            R2[i] <- 1 - sum((predata$y - yhat)^2) / sum((predata$y - mean(predata$y))^2)
+        } else {
+            R2[i] <- NA
+        }
+    }
+    return(mean(R2, na.rm = TRUE))
+}
+# D?finition d'une fonction pour le bootstrap
+R2bootstrap <- function(x, y, freq, n){
+    R2 <- vector(length = n)
+    for (i in 1:n){
+        index_app <- sample.int(length(y), size = length(y), replace = TRUE)
+        index_pre <- c(1:length(y))[!c(1:length(y)) %in% index_app]
+        appdata <- data.frame(y = y[index_app], x = x[index_app], freq = freq[index_app])
+        predata <- data.frame(y = y[index_pre], x = x[index_pre], freq = freq[index_pre])
+        fit <- lm(y ~ x, data = appdata, weights = freq)
+        yhat <- predict(fit, predata)
+        R2[i] <- 1 - sum((predata$y - yhat)^2) / sum((predata$y - mean(predata$y))^2)
+    }
+    return(mean(R2))
+}
+```
+
+```{r, echo=FALSE}
+# Lecture du catalogue
+setwd("/Users/ariane/Documents/Travail/BRGM/CDSA")
+data <- read.xlsx("cat_ISC_1972-2014.xlsx", sheet = "ouput")
+# Conversion de la date
+data$Date <- as.POSIXct(data$Date * (24 * 60 * 60), origin = "1899-12-30")
+# Changement des noms de quelques variables (pour ?viter d'avoir plusieurs fois les m?mes)
+names(data)[20] <- "mdsrc_TRN"
+names(data)[22] <- "mdsrc_FDF"
+names(data)[24] <- "mdsrc_autre"
+# S?lection de quelques variables
+date <- data$Date
+mw <- data$mw
+mb <- data$mb
+ms <- data$ms
+ml <- data$ml
+mwsrc <- data$mwsrc
+md_TRN <- data$md_TRN
+md_FDF <- data$md_FDF
+md_autre <- data$md_autre
+mdsrc_autre <- as.factor(data$mdsrc_autre)
+```
+
+# Comparaison des magnitudes de dur?e
+
+## Analyse des donn?es
+
+Les magnitudes de dur?e sont fournies par l'observatoire de Trinidad, celui de Fort-de-France et plusieurs autres sources. Parmi les autres sources, nous comptons le nombre de magnitudes de dur?e fournies par chaque observatoire.
+
+```{r, echo=FALSE}
+table(mdsrc_autre)
+```
+
+Seul l'observatoire de Porto Rico (RSPR) semble avoir assez de donn?es pour les comparer avec les donn?es des deux autres observatoires. Nous n'allons donc conserver que celles-ci pour la suite de l'analyse.
+
+```{r, echo=FALSE}
+# Cr?ation d'une nouvelle variable pour les donn?es de Porto Rico
+md_RSPR <- md_autre
+md_RSPR[mdsrc_autre != "RSPR"] <- NA
+```
+
+Nous analysons bri?vement la distribution des magnitudes de dur?e pour chacun des trois observatoires consid?r?s (Figure 1).
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Distribution des magnitudes de dur?e"}
+boxplot(md_TRN, md_FDF, md_RSPR, names = c("TRN", "FDF", "RSPR"))
+title(main = "Distribution des magnitudes de dur?e")
+```
+
+- Observatoire de Trinidad
+
+```{r, echo=FALSE}
+summary(md_TRN)
+```
+
+- Observatoire de Fort-de-France
+
+```{r, echo=FALSE}
+summary(md_FDF)
+```
+
+- Observatoire de Porto Rico
+
+```{r, echo=FALSE}
+summary(md_RSPR)
+```
+
+```{r, echo=FALSE}
+# Nombre de donn?es disponibles pour la r?gression
+com_TRN_FDF <- sum(!is.na(md_TRN) & !is.na(md_FDF))
+com_TRN_RSPR <- sum(!is.na(md_TRN) & !is.na(md_RSPR))
+com_FDF_RSPR <- sum(!is.na(md_FDF) & !is.na(md_RSPR))
+```
+
+Il y a `r com_TRN_FDF` donn?es en commun entre l'observatoire de Trinidad et celui de Fort-de-France, `r com_TRN_RSPR` donn?es en commun entre l'observatoire de Trinidad et celui de Porto Rico, et `r com_FDF_RSPR` donn?es en commun entre l'observatoire de Fort-de-France et celui de Porto Rico.
+
+## R?gressions lin?aires
+
+Pour v?rifier si les magnitudes de dur?e fournies par les diff?rents observatoires sont coh?rentes entre elles, nous effectuons des r?gressions lin?aires de l'une par rapport ? l'autre.
+
+### Comparaison entre les magnitudes de dur?e fournies par Trinidad et Fort-de-France
+
+```{r, echo=FALSE}
+x <- md_TRN[!is.na(md_TRN) & !is.na(md_FDF)]
+y <- md_FDF[!is.na(md_TRN) & !is.na(md_FDF)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("TRN", "FDF", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$TRN <- as.numeric(as.character(subFreqData$TRN))
+subFreqData$FDF <- as.numeric(as.character(subFreqData$FDF))
+fit1 <- lm(FDF ~ TRN, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$FDF, subFreqData$TRN, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$FDF, subFreqData$TRN, subFreqData$freq, 50)
+```
+
+La relation entre les deux magnitudes de dur?e est :
+
+$M_{d, FDF}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{d, TRN}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, TRN}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{d, FDF}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_TRN_FDF`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+La Figure 2 repr?sente les magnitudes de dur?e fournies par l'observatoire de Fort-de-France en fonction des magnitudes de dur?e fournies par l'observatoire de Trinidad. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de dur?e fournies par l'observatoire de Trinidad et celles fournies par l'observatoire de Fort-de-France"}
+g1 <- ggplot(subFreqData, aes(x = TRN, y = FDF))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$TRN), max(subFreqData$TRN)), ylim = c(min(subFreqData$FDF), max(subFreqData$FDF)))
+g1 <- g1 + labs(title = "Comparaison entre Trinidad et Fort-de-France", x = "Magnitude de dur?e TRN", y = "Magnitude de dur?e FDF")
+g1
+```
+
+### Comparaison entre les magnitudes de dur?e fournies par Fort-de-France et Trinidad
+
+```{r, echo=FALSE}
+x <- md_FDF[!is.na(md_FDF) & !is.na(md_TRN)]
+y <- md_TRN[!is.na(md_FDF) & !is.na(md_TRN)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("FDF", "TRN", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$FDF <- as.numeric(as.character(subFreqData$FDF))
+subFreqData$TRN <- as.numeric(as.character(subFreqData$TRN))
+fit1 <- lm(TRN ~ FDF, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$TRN, subFreqData$FDF, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$TRN, subFreqData$FDF, subFreqData$freq, 50)
+```
+
+La relation entre les deux magnitudes de dur?e est :
+
+$M_{d, TRN}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{d, FDF}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, FDF}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{d, TRN}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_TRN_FDF`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+La Figure 3 repr?sente les magnitudes de dur?e fournies par l'observatoire de Trinidad en fonction des magnitudes de dur?e fournies par l'observatoire de Fort-de-France. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de dur?e fournies par l'observatoire de Fort-de-France et celles fournies par l'observatoire de Trinidad"}
+g1 <- ggplot(subFreqData, aes(x = FDF, y = TRN))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$FDF), max(subFreqData$FDF)), ylim = c(min(subFreqData$TRN), max(subFreqData$TRN)))
+g1 <- g1 + labs(title = "Comparaison entre Fort-de-France et Trinidad", x = "Magnitude de dur?e FDF", y = "Magnitude de dur?e TRN")
+g1
+```
+
+### Comparaison entre les magnitudes de dur?e fournies par Trinidad et Porto Rico
+
+```{r, echo=FALSE}
+x <- md_TRN[!is.na(md_TRN) & !is.na(md_RSPR)]
+y <- md_RSPR[!is.na(md_TRN) & !is.na(md_RSPR)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("TRN", "RSPR", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$TRN <- as.numeric(as.character(subFreqData$TRN))
+subFreqData$RSPR <- as.numeric(as.character(subFreqData$RSPR))
+fit2 <- lm(RSPR ~ TRN, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$RSPR, subFreqData$TRN, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$RSPR, subFreqData$TRN, subFreqData$freq, 50)
+```
+
+La relation entre les deux magnitudes de dur?e est :
+
+$M_{d, RSPR}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $M_{d, TRN}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, TRN}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{d, RSPR}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r com_TRN_RSPR`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+La Figure 4 repr?sente les magnitudes de dur?e fournies par l'observatoire de Porto Rico en fonction des magnitudes de dur?e fournies par l'observatoire de Trinidad. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de dur?e fournies par l'observatoire de Trinidad et celles fournies par l'observatoire de Porto Rico"}
+g2 <- ggplot(subFreqData, aes(x = TRN, y = RSPR))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$TRN), max(subFreqData$TRN)), ylim = c(min(subFreqData$RSPR), max(subFreqData$RSPR)))
+g2 <- g2 + labs(title = "Comparaison entre Trinidad et Porto Rico", x = "Magnitude de dur?e TRN", y = "Magnitude de dur?e RSPR")
+g2
+```
+
+### Comparaison entre les magnitudes de dur?e fournies par Fort-de-France et Porto Rico
+
+```{r, echo=FALSE}
+x <- md_FDF[!is.na(md_FDF) & !is.na(md_RSPR)]
+y <- md_RSPR[!is.na(md_FDF) & !is.na(md_RSPR)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("FDF", "RSPR", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$FDF <- as.numeric(as.character(subFreqData$FDF))
+subFreqData$RSPR <- as.numeric(as.character(subFreqData$RSPR))
+fit3 <- lm(RSPR ~ FDF, data = subFreqData, weights = freq)
+coeff3 <- summary(fit3)$coefficients
+R23 <- summary(fit3)$r.squared
+sigma3 <- summary(fit3)$sigma
+R23pred_CV <- R2crossvalid(subFreqData$RSPR, subFreqData$FDF, subFreqData$freq, 10)
+R23pred_BS <- R2bootstrap(subFreqData$RSPR, subFreqData$FDF, subFreqData$freq, 50)
+```
+
+La relation entre les deux magnitudes de dur?e est :
+
+$M_{d, RSPR}$ = `r round(coeff3[2, 1], digits = 3)`(+- `r round(coeff3[2, 2], digits = 3)`) $M_{d, FDF}$ + `r round(coeff3[1, 1], digits = 3)`(+- `r round(coeff3[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, FDF}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{d, RSPR}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R23, digits = 3)`, $\sigma$ = `r round(sigma3, digits = 3)`, n = `r com_FDF_RSPR`
+
+$R^2_{pred}$ = `r round(R23pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R23pred_BS, digits = 3)` (bootstrap)
+
+La Figure 5 repr?sente les magnitudes de dur?e fournies par l'observatoire de Porto Rico en fonction des magnitudes de dur?e fournies par l'observatoire de Fort-de-France. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de dur?e fournies par l'observatoire de Fort-de-France et celles fournies par l'observatoire de Porto Rico"}
+g3 <- ggplot(subFreqData, aes(x = FDF, y = RSPR))
+g3 <- g3 + scale_size(range = c(2, 20), guide = "none" )
+g3 <- g3 + geom_point(aes(colour = freq, size = freq))
+g3 <- g3 + scale_colour_gradient(low = "grey25", high = "white")                    
+g3 <- g3 + geom_abline(intercept = coef(fit3)[1], slope = coef(fit3)[2], size = 1, colour = "red")
+g3 <- g3 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g3 <- g3 + coord_cartesian(xlim = c(min(subFreqData$FDF), max(subFreqData$FDF)), ylim = c(min(subFreqData$RSPR), max(subFreqData$RSPR)))
+g3 <- g3 + labs(title = "Comparaison entre Fort-de-France et Porto Rico", x = "Magnitude de dur?e FDF", y = "Magnitude de dur?e RSPR")
+g3
+```
+
+Les magnitudes de dur?e fournies par l'observatoire de Trinidad et celles fournies par l'observatoire de Fort-de-France sont relativement coh?rentes entre elles. En revanche, les magnitudes de dur?e fournies par l'observatoire de Porto Rico sont significativement diff?rentes de celles fournies par les deux autres observatoires.
+
+# Comparaison des magnitudes de dur?e et des magnitudes de moment
+
+## Analyse des donn?es
+
+```{r, echo=FALSE}
+# Nombre de donn?es disponibles pour la r?gression
+com_w_TRN <- sum(!is.na(mw) & !is.na(md_TRN))
+com_w_FDF <- sum(!is.na(mw) & !is.na(md_FDF))
+com_w_RSPR <- sum(!is.na(mw) & !is.na(md_RSPR))
+com_w_TRN_SF <- sum(!is.na(mw) & !is.na(md_TRN) & mwsrc != "FUNV")
+com_w_FDF_SF <- sum(!is.na(mw) & !is.na(md_FDF) & mwsrc != "FUNV")
+com_w_RSPR_SF <- sum(!is.na(mw) & !is.na(md_RSPR) & mwsrc != "FUNV")
+```
+
+Il y a `r com_w_TRN` donn?es en commun entre la magnitude de moment et la magnitude de dur?e de l'observatoire de Trinidad, `r com_w_FDF` donn?es en commun entre la magnitude de moment et la magnitude de dur?e de l'observatoire de Fort-de-France, et `r com_w_RSPR` donn?es en commun entre la magnitude de moment et la magnitude de dur?e de l'observatoire de Porto Rico
+
+La relation entre magnitude de dur?e et magnitude de moment propos?e par Drouet *et al.* (2011, ?quation 10) est :
+
+$M_{W}$ = 1.01(+- 0.01) $M_{d}$ + 0.50(+- 0.03)
+
+## V?rification du mod?le de Drouet
+
+```{r, echo=FALSE}
+# Lecture des donn?es
+data_drouet <- read.xlsx("drouet_Mw.xlsx", sheet = "drouet")
+md_drouet <- data_drouet$Md
+mw_drouet <- data_drouet$Mw
+date_drouet <- paste(data_drouet$date, data_drouet$heure, sep = "_")
+date_drouet <- as.POSIXct(date_drouet, format = "%Y.%m.%d_%H.%M.%S")
+# R?gression
+x <- md_drouet[md_drouet != 0]
+y <- mw_drouet[md_drouet != 0]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("md", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$md <- as.numeric(as.character(subFreqData$md))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit1 <- lm(mw ~ md, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$md, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$md, subFreqData$freq, 50)
+```
+
+Nous reprenons les donn?es utilis?es par Drouet *et al.* (2011, tableau 5) pour d?terminer la relation entre la magnitude de dur?e (observatoire de Fort-de-France) et la magnitude de moment. Il y a `r length(x)` observations.
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{d}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r length(x)`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du tableau 5, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 6 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Fort-de-France issues du tableau 5 de Drouet *et al.* (2011). La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du tableau 5, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Fort-de-France"}
+g1 <- ggplot(subFreqData, aes(x = md, y = mw))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$md), max(subFreqData$md)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g1 <- g1 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e", y = "Magnitude de moment")
+g1
+```
+
+On ne retrouve pas le m?me mod?le que Drouet *et al.* (2011). En effet, la pente de la r?gression est un peu plus faible. Cela peut ?tre d? au fait que Drouet *et al.* (2011) ne pr?cisent pas sur quel intervalle de magnitudes leur r?gression a ?t? effectu?e. Cependant, le mod?le de Drouet *et al.* (2011) est assez bon, m?me s'il ne permet pas de mod?liser les donn?es aussi bien que la r?gression effectu?e dans cette ?tude.
+
+## R?gressions lin?aires
+
+### Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par Trinidad
+
+#### Avec les donn?es de Funvisis
+
+```{r, echo=FALSE}
+x <- md_TRN[!is.na(md_TRN) & !is.na(mw)]
+y <- mw[!is.na(md_TRN) & !is.na(mw)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("TRN", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$TRN <- as.numeric(as.character(subFreqData$TRN))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit1 <- lm(mw ~ TRN, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$TRN, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$TRN, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{d, TRN}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, TRN}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_w_TRN`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 7 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Trinidad. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Trinidad"}
+g1 <- ggplot(subFreqData, aes(x = TRN, y = mw))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$TRN), max(subFreqData$TRN)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g1 <- g1 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e TRN", y = "Magnitude de moment")
+g1
+```
+
+#### Sans les donn?es de Funvisis
+
+Si on enl?ve les magnitudes de moment fournies par Funvisis, il n'y a plus que `r com_w_TRN_SF` donn?es en commun entre la magnitude de moment et la magnitude de dur?e de l'observatoire de Trinidad.
+
+```{r, echo=FALSE}
+x <- md_TRN[!is.na(md_TRN) & !is.na(mw) & mwsrc != "FUNV"]
+y <- mw[!is.na(md_TRN) & !is.na(mw) & mwsrc != "FUNV"]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("TRN", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$TRN <- as.numeric(as.character(subFreqData$TRN))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit1 <- lm(mw ~ TRN, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$TRN, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$TRN, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{d, TRN}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, TRN}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_w_TRN_SF`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 8 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Trinidad. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Trinidad (sans les donn?es de Funvisis)"}
+g1 <- ggplot(subFreqData, aes(x = TRN, y = mw))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$TRN), max(subFreqData$TRN)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g1 <- g1 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e TRN", y = "Magnitude de moment")
+g1
+```
+
+### Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par Fort-de-France
+
+#### Avec les donn?es de Funvisis
+
+```{r, echo=FALSE}
+x <- md_FDF[!is.na(md_FDF) & !is.na(mw)]
+y <- mw[!is.na(md_FDF) & !is.na(mw)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("FDF", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$FDF <- as.numeric(as.character(subFreqData$FDF))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit2 <- lm(mw ~ FDF, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$FDF, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$FDF, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $M_{d, FDF}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, FDF}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r com_w_FDF`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 9 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Fort-de-France. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Fort-de-France"}
+g2 <- ggplot(subFreqData, aes(x = FDF, y = mw))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$FDF), max(subFreqData$FDF)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g2 <- g2 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e FDF", y = "Magnitude de moment")
+g2
+```
+
+#### Sans les donn?es de Funvisis
+
+Si on enl?ve les magnitudes de moment fournies par Funvisis, il n'y a plus que `r com_w_FDF_SF` donn?es en commun entre la magnitude de moment et la magnitude de dur?e de l'observatoire de Fort-de-France.
+
+```{r, echo=FALSE}
+x <- md_FDF[!is.na(md_FDF) & !is.na(mw) & mwsrc != "FUNV"]
+y <- mw[!is.na(md_FDF) & !is.na(mw) & mwsrc != "FUNV"]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("FDF", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$FDF <- as.numeric(as.character(subFreqData$FDF))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit2 <- lm(mw ~ FDF, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$FDF, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$FDF, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $M_{d, FDF}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, FDF}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r com_w_FDF_SF`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 10 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Fort-de-France. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Fort-de-France (sans les donn?es de Funvisis)"}
+g2 <- ggplot(subFreqData, aes(x = FDF, y = mw))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$FDF), max(subFreqData$FDF)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g2 <- g2 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e FDF", y = "Magnitude de moment")
+g2
+```
+
+#### Avec les donn?es de Drouet *et al.* (2011) et sans les donn?es de Funvisis
+
+```{r, echo=FALSE}
+data1 <- data.frame(md = md_FDF[!is.na(mw) & !is.na(md_FDF) & mwsrc != "FUNV"], mw = mw[!is.na(mw) & !is.na(md_FDF) & mwsrc != "FUNV"], date = date[!is.na(mw) & !is.na(md_FDF) & mwsrc != "FUNV"])
+data2 <- data.frame(md = md_drouet[md_drouet != 0], mw = mw_drouet[md_drouet != 0], date = date_drouet[md_drouet != 0])
+data_all <- rbind(data1, data2)
+x <- data_all$md
+y <- data_all$mw
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("md", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$md <- as.numeric(as.character(subFreqData$md))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit2 <- lm(mw ~ md, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$md, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$md, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $M_{d}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r dim(data_all)[1]`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant l'ensembe des donn?es du tableau 5 de Drouet *et al.* (2011) et du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 11 repr?sente les magnitudes de moment en fonction de l'ensemble des magnitudes de dur?e issues du tableau 5 et des magnitudes de dur?e issues du catalogue CDSA fournies par l'observatoire de Fort-de-France. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du tableau 5 et du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et l'ensemble des magnitudes de dur?e fournies par l'observatoire de Fort-de-France"}
+g2 <- ggplot(subFreqData, aes(x = md, y = mw))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$md), max(subFreqData$md)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g2 <- g2 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e FDF", y = "Magnitude de moment")
+g2
+```
+
+### Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par Porto Rico
+
+#### Avec les donn?es de Funvisis
+
+```{r, echo=FALSE}
+x <- md_RSPR[!is.na(md_RSPR) & !is.na(mw)]
+y <- mw[!is.na(md_RSPR) & !is.na(mw)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("RSPR", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$RSPR <- as.numeric(as.character(subFreqData$RSPR))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit3 <- lm(mw ~ RSPR, data = subFreqData, weights = freq)
+coeff3 <- summary(fit3)$coefficients
+R23 <- summary(fit3)$r.squared
+sigma3 <- summary(fit3)$sigma
+R23pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$RSPR, subFreqData$freq, 10)
+R23pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$RSPR, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff3[2, 1], digits = 3)`(+- `r round(coeff3[2, 2], digits = 3)`) $M_{d, RSPR}$ + `r round(coeff3[1, 1], digits = 3)`(+- `r round(coeff3[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, RSPR}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R23, digits = 3)`, $\sigma$ = `r round(sigma3, digits = 3)`, n = `r com_w_RSPR`
+
+$R^2_{pred}$ = `r round(R23pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R23pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 12 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Porto Rico. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Porto Rico"}
+g3 <- ggplot(subFreqData, aes(x = RSPR, y = mw))
+g3 <- g3 + scale_size(range = c(2, 20), guide = "none" )
+g3 <- g3 + geom_point(aes(colour = freq, size = freq))
+g3 <- g3 + scale_colour_gradient(low = "grey25", high = "white")                    
+g3 <- g3 + geom_abline(intercept = coef(fit3)[1], slope = coef(fit3)[2], size = 1, colour = "red")
+g3 <- g3 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g3 <- g3 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g3 <- g3 + coord_cartesian(xlim = c(min(subFreqData$RSPR), max(subFreqData$RSPR)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g3 <- g3 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e RSPR", y = "Magnitude de moment")
+g3
+```
+
+#### Sans les donn?es de Funvisis
+
+Si on enl?ve les magnitudes de moment fournies par Funvisis, il n'y a plus que `r com_w_RSPR_SF` donn?es en commun entre la magnitude de moment et la magnitude de dur?e de l'observatoire de Porto Rico.
+
+```{r, echo=FALSE}
+x <- md_RSPR[!is.na(md_RSPR) & !is.na(mw) & mwsrc != "FUNV"]
+y <- mw[!is.na(md_RSPR) & !is.na(mw) & mwsrc != "FUNV"]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("RSPR", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$RSPR <- as.numeric(as.character(subFreqData$RSPR))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit3 <- lm(mw ~ RSPR, data = subFreqData, weights = freq)
+coeff3 <- summary(fit3)$coefficients
+R23 <- summary(fit3)$r.squared
+sigma3 <- summary(fit3)$sigma
+R23pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$RSPR, subFreqData$freq, 10)
+R23pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$RSPR, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude de dur?e est :
+
+$M_{W}$ = `r round(coeff3[2, 1], digits = 3)`(+- `r round(coeff3[2, 2], digits = 3)`) $M_{d, RSPR}$ + `r round(coeff3[1, 1], digits = 3)`(+- `r round(coeff3[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, RSPR}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R23, digits = 3)`, $\sigma$ = `r round(sigma3, digits = 3)`, n = `r com_w_RSPR_SF`
+
+$R^2_{pred}$ = `r round(R23pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R23pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Drouet *et al.* (2011) pour calculer la magnitude de moment ? partir de la magnitude de dur?e en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 0.50 - 1.01 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 13 repr?sente les magnitudes de moment en fonction des magnitudes de dur?e fournies par l'observatoire de Porto Rico. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Drouet *et al.* (2011), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes de dur?e fournies par l'observatoire de Porto Rico (sans les donn?es de Funvisis)"}
+g3 <- ggplot(subFreqData, aes(x = RSPR, y = mw))
+g3 <- g3 + scale_size(range = c(2, 20), guide = "none" )
+g3 <- g3 + geom_point(aes(colour = freq, size = freq))
+g3 <- g3 + scale_colour_gradient(low = "grey25", high = "white")                    
+g3 <- g3 + geom_abline(intercept = coef(fit3)[1], slope = coef(fit3)[2], size = 1, colour = "red")
+g3 <- g3 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g3 <- g3 + geom_abline(intercept = 0.50, slope = 1.01, size = 1, colour = "blue")
+g3 <- g3 + coord_cartesian(xlim = c(min(subFreqData$RSPR), max(subFreqData$RSPR)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g3 <- g3 + labs(title = "Comparaison entre magnitudes de dur?e et de moment", x = "Magnitude de dur?e RSPR", y = "Magnitude de moment")
+g3
+```
+
+Un mod?le lin?aire permet assez bien d'expliquer la relation entre magnitudes de moment et magnitudes de dur?e. Pour les donn?es fournies par les observatoires de Trinidad et de Fort-de-France, le coefficient de pente obtenu ? l'aide des donn?es du catalogue CDSA est proche de celui du mod?le de Drouet *et al.* (2011), mais l'intercept est tr?s diff?rent. Cependant, pour les donn?es fournies par l'observatoire de Porto Rico, le coefficient de pente est diff?rent du mod?le de Drouet *et al.* (2011). Si on effectue les r?gressions lin?aires en ne tenant pas compte des magnitudes de moment fournies par Funvisis, le mod?le lin?aire obtenu ? l'aide des donn?es du catalogue CDSA se rapproche du mod?le de Drouet *et al.* (2011) pour les donn?es fournies par l'observatoire de Trinidad. En revanche, pour les donn?es fournies par les observatoires de Fort-de-France et de Porto Rico, le coefficient de pente n'est plus du tout correct. Cela peut ?tre du au petit nombre de donn?es disponibles pour ces observatoires.
+
+# Comparaison des magnitudes d'ondes de surface et des magnitudes de moment
+
+## Analyse des donn?es
+
+```{r, echo=FALSE}
+# Nombre de donn?es disponibles pour la r?gression
+com_w_s <- sum(!is.na(mw) & !is.na(ms))
+com_w_s_small <- sum(!is.na(mw) & !is.na(ms) & (ms >= 3) & (ms <= 6.1)) # Scordilis
+com_w_s_small2 <- sum(!is.na(mw) & !is.na(ms) & (ms <= 6.47)) # Di Giacomo, linear
+com_w_s_SF <- sum(!is.na(mw) & !is.na(ms) & mwsrc != "FUNV")
+com_w_s_small_SF <- sum(!is.na(mw) & !is.na(ms) & (ms >= 3) & (ms <= 6.1) & mwsrc != "FUNV") # Scordilis
+com_w_s_small2_SF <- sum(!is.na(mw) & !is.na(ms) & (ms <= 6.47) & mwsrc != "FUNV") # Di Giacomo, linear
+```
+
+Il y a `r com_w_s` donn?es en commun entre la magnitude de moment et la magnitude d'ondes de surface. Pour les magnitudes d'ondes de surface comprises entre 3 et 6.1, il y a `r com_w_s_small` donn?es en commun. Pour les magnitudes d'ondes de surface inf?rieures ? 6.47, il y a `r com_w_s_small2` donn?es en commun.
+
+La relation entre magnitude d'ondes de surface et magnitude de moment propos?e par Scordilis (2006, ?quation 14) est :
+
+$M_{W}$ = 0.67(+- 0.005) $M_{S}$ + 2.07(+- 0.03)
+
+3 < $M_{S}$ < 6.1
+
+$R^2$ = 0.77, $\sigma$ = 0.17, n = 23921
+
+La relation entre magnitude d'ondes de surface et magnitude de moment propos?e par Di Giacomo *et al.* (2014, ?quation 1) est :
+
+$M_{W}$ = 0.67 $M_{S}$ + 2.13
+
+$M_{S}$ < 6.47
+
+pour le mod?le lin?aire et :
+
+$M_{W}$ = exp (0.233 $M_{S}$ - 0.222) + 2.863
+
+pour le mod?le exponentiel.
+
+## R?gressions lin?aires
+
+### Avec les donn?es de Funvisis
+
+```{r, echo=FALSE}
+x <- ms[!is.na(ms) & !is.na(mw)]
+y <- mw[!is.na(ms) & !is.na(mw)]
+x2 <- ms[!is.na(ms) & !is.na(mw) & (ms >= 3) & (ms <= 6.1)] # Scordilis
+y2 <- mw[!is.na(ms) & !is.na(mw) & (ms >= 3) & (ms <= 6.1)]
+x3 <- ms[!is.na(ms) & !is.na(mw) & (ms <= 6.47)] # Di Giacomo, linear
+y3 <- mw[!is.na(ms) & !is.na(mw) & (ms <= 6.47)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("ms", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$ms <- as.numeric(as.character(subFreqData$ms))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit1 <- lm(mw ~ ms, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$ms, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$ms, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude d'ondes de surface est :
+
+$M_{W}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{S}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{S}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_w_s`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Scordilis (2006, ?quation 14) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de surface en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y2 - 2.07 - 0.67 * x2)^2) / sum((y2 - mean(y2))^2), digits = 3)`
+
+En utilisant le mod?le lin?aire propos? par Di Giacomo *et al.* (2014, ?quation 1) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de surface en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y3 - 2.13 - 0.67 * x3)^2) / sum((y3 - mean(y3))^2), digits = 3)`
+
+En utilisant le mod?le exponentiel propos? par Di Giacomo *et al.* (2014, ?quation 1) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de surface en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 2.863 - exp(0.233 * x - 0.222))^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 14 repr?sente les magnitudes de moment en fonction des magnitudes d'ondes de surface. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue, la ligne bleue repr?sente le mod?le lin?aire propos? par Scordilis (2006), la ligne verte repr?sente le mod?le lin?aire propos? par Di Giacomo *et al.* (2014), la ligne jaune repr?sente le mod?le exponentiel propos? par Di Giacomo *et al.* (2014), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, warning=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes d'ondes de surface"}
+g1 <- ggplot(subFreqData, aes(x = ms, y = mw))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + geom_abline(intercept = 2.07, slope = 0.67, size = 1, colour = "blue")
+g1 <- g1 + geom_abline(intercept = 2.13, slope = 0.67, size = 1, colour = "green")
+g1 <- g1 + stat_function(fun = function(t) 2.863 + exp(0.233 * t - 0.222), size = 1, colour = "gold")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$ms), max(subFreqData$ms)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g1 <- g1 + labs(title = "Comparaison entre magnitudes d'ondes de surface et de moment", x = "Magnitude d'ondes de surface", y = "Magnitude de moment")
+g1
+```
+
+### Sans les donn?es de Funvisis
+
+Si on enl?ve les magnitudes de moment fournies par Funvisis, il y a plus que `r com_w_s_SF` donn?es en commun entre la magnitude de moment et la magnitude d'ondes de surface. Pour les magnitudes d'ondes de surface comprises entre 3 et 6.1, il y a `r com_w_s_small_SF` donn?es en commun. Pour les magnitudes d'ondes de surface inf?rieures ? 6.47, il y a `r com_w_s_small2_SF` donn?es en commun.
+
+```{r, echo=FALSE}
+x <- ms[!is.na(ms) & !is.na(mw) & mwsrc != "FUNV"]
+y <- mw[!is.na(ms) & !is.na(mw) & mwsrc != "FUNV"]
+x2 <- ms[!is.na(ms) & !is.na(mw) & (ms >= 3) & (ms <= 6.1) & mwsrc != "FUNV"] # Scordilis
+y2 <- mw[!is.na(ms) & !is.na(mw) & (ms >= 3) & (ms <= 6.1) & mwsrc != "FUNV"]
+x3 <- ms[!is.na(ms) & !is.na(mw) & (ms <= 6.47) & mwsrc != "FUNV"] # Di Giacomo, linear
+y3 <- mw[!is.na(ms) & !is.na(mw) & (ms <= 6.47) & mwsrc != "FUNV"]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("ms", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$ms <- as.numeric(as.character(subFreqData$ms))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit2 <- lm(mw ~ ms, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$ms, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$ms, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude d'ondes de surface est :
+
+$M_{W}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $M_{S}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{S}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r com_w_s_SF`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Scordilis (2006, ?quation 14) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de surface en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y2 - 2.07 - 0.67 * x2)^2) / sum((y2 - mean(y2))^2), digits = 3)`
+
+En utilisant le mod?le lin?aire propos? par Di Giacomo *et al.* (2014, ?quation 1) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de surface en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y3 - 2.13 - 0.67 * x3)^2) / sum((y3 - mean(y3))^2), digits = 3)`
+
+En utilisant le mod?le exponentiel propos? par Di Giacomo *et al.* (2014, ?quation 1) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de surface en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 2.863 - exp(0.233 * x - 0.222))^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 15 repr?sente les magnitudes de moment en fonction des magnitudes d'ondes de surface. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue, la ligne bleue repr?sente le mod?le lin?aire propos? par Scordilis (2006), la ligne verte repr?sente le mod?le lin?aire propos? par Di Giacomo *et al.* (2014), la ligne jaune repr?sente le mod?le exponentiel propos? par Di Giacomo *et al.* (2014), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, warning=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes d'ondes de surface (sans les donn?es de Funvisis)"}
+g2 <- ggplot(subFreqData, aes(x = ms, y = mw))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + geom_abline(intercept = 2.07, slope = 0.67, size = 1, colour = "blue")
+g2 <- g2 + geom_abline(intercept = 2.13, slope = 0.67, size = 1, colour = "green")
+g2 <- g2 + stat_function(fun = function(t) 2.863 + exp(0.233 * t - 0.222), size = 1, colour = "gold")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$ms), max(subFreqData$ms)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g2 <- g2 + labs(title = "Comparaison entre magnitudes d'ondes de surface et de moment", x = "Magnitude d'ondes de surface", y = "Magnitude de moment")
+g2
+```
+
+Le mod?le de Scordilis (2006) et le mod?le lin?aire de Di Giacome *et al.* (2014) appliqu?s sur les donn?es du catalogue CDSA expliquent un peu moins bien la relation entre magnitudes de moment et magnitudes d'ondes de surface que la r?gression lin?aire effectu?e dans cette ?tude, mais restent assez bons. La r?gression effectu?e avec les donn?es du catalogue CDSA donne un r?sultat un peu moins bon que la r?gression effectu?e par Scordilis (2006) avec les donn?es de diff?rents catalogues internationaux. En revanche, le mod?le exponentiel de Di Giacomo *et al.* (2014) explique moins bien la relation entre magnitudes de moment et magnitudes d'ondes de surface que la r?gression lin?aire effectu?e dans cette ?tude. Si on effectue les r?gressions lin?aires en ne tenant pas compte des magnitudes de moment fournies par Funvisis, tous les mod?les de r?gression sont meilleurs, en particulier le mod?le exponentiel de Di Giacomo *et al* (2014). Cependant, la r?gression lin?aire effectu?e dans cette ?tude explique toujours mieux la relation entre magnitudes de moment et magnitudes d'ondes de surface que les mod?les propos?s par Scordilis (2006) et Di Giacomo *et al.* (2014).
+
+# Comparaison des magnitudes d'ondes de volume et des magnitudes de moment
+
+## Analyse des donn?es
+
+```{r, echo=FALSE}
+# Nombre de donn?es disponibles pour la r?gression
+com_w_b <- sum(!is.na(mw) & !is.na(mb))
+com_w_b_small <- sum(!is.na(mw) & !is.na(mb) & (mb >= 3.5) & (mb <= 6.2)) # Scordilis
+com_w_b_SF <- sum(!is.na(mw) & !is.na(mb) & mwsrc != "FUNV")
+com_w_b_small_SF <- sum(!is.na(mw) & !is.na(mb) & (mb >= 3.5) & (mb <= 6.2) & mwsrc != "FUNV") # Scordilis
+```
+
+Il y a `r com_w_b` donn?es en commun entre la magnitude de moment et la magnitude d'ondes de volume. Pour les magnitudes d'ondes de volume comprises entre 3.5 et 6.2, il y a `r com_w_b_small` donn?es en commun.
+
+La relation entre magnitude d'ondes de volume et magnitude de moment propos?e par Scordilis (2006, ?quation 22) est :
+
+$M_{W}$ = 0.85(+- 0.04) $m_{b}$ + 1.03(+- 0.23)
+
+3.5 < $m_{b}$ < 6.2
+
+$R^2$ = 0.53, $\sigma$ = 0.29, n = 39784
+
+La relation entre magnitude d'ondes de volume et magnitude de moment propos?e par Di Giacomo *et al.* (2014, ?quation 2) est :
+
+$M_{W}$ = 1.38 $m_{b}$ - 1.79
+
+pour le mod?le lin?aire et :
+
+$M_{W}$ = exp (0.859 $m_{b}$ - 4.664) + 4.555
+
+pour le mod?le exponentiel.
+
+## R?gressions lin?aires
+
+### Avec les donn?es de Funvisis
+
+```{r, echo=FALSE}
+x <- mb[!is.na(mb) & !is.na(mw)]
+y <- mw[!is.na(mb) & !is.na(mw)]
+x2 <- mb[!is.na(mb) & !is.na(mw) & (mb >= 3.5) & (mb <= 6.2)] # Scordilis
+y2 <- mw[!is.na(mb) & !is.na(mw) & (mb >= 3.5) & (mb <= 6.2)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("mb", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$mb <- as.numeric(as.character(subFreqData$mb))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit1 <- lm(mw ~ mb, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$mb, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$mb, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude d'ondes de volume est :
+
+$M_{W}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $m_{b}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $m_{b}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_w_b`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Scordilis (2006, ?quation 22) pour calculer la magnitude de moment ? partir de la magnitude de volume en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y2 - 1.03 - 0.85 * x2)^2) / sum((y2 - mean(y2))^2), digits = 3)`
+
+En utilisant le mod?le lin?aire propos? par Di Giacomo *et al.* (2014, ?quation 2) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de volume en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y + 1.79 - 1.38 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+En utilisant le mod?le exponentiel propos? par Di Giacomo *et al.* (2014, ?quation 2) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de volume en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 4.555 - exp(0.859 * x - 4.664))^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 16 repr?sente les magnitudes de moment en fonction des magnitudes d'ondes de volume. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Scordilis (2006), la ligne verte repr?sente le mod?le lin?aire propos? par Di Giacomo *et al*. (2014), la ligne jaune repr?sente le mod?le exponentiel propos? par Di Giacomo *et al.* (2014), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, warning=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes d'ondes de volume"}
+g1 <- ggplot(subFreqData, aes(x = mb, y = mw))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + geom_abline(intercept = 1.03, slope = 0.85, size = 1, colour = "blue")
+g1 <- g1 + geom_abline(intercept = -1.79, slope = 1.38, size = 1, colour = "green")
+g1 <- g1 + stat_function(fun = function(t) 4.555 + exp(0.859 * t - 4.664), size = 1, colour = "gold")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$mb), max(subFreqData$mb)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g1 <- g1 + labs(title = "Comparaison entre magnitudes d'ondes de volume et de moment", x = "Magnitude d'ondes de volume", y = "Magnitude de moment")
+g1
+```
+
+### Sans les donn?es de Funvisis
+
+Si on enl?ve les magnitudes de moment fournies par Funvisis, il y a plus que `r com_w_b_SF` donn?es en commun entre la magnitude de moment et la magnitude d'ondes de volume. Pour les magnitudes d'ondes de volume entre 3.5 et 6.2, il y a `r com_w_b_small_SF` donn?es en commun.
+
+```{r, echo=FALSE}
+x <- mb[!is.na(mb) & !is.na(mw) & mwsrc != "FUNV"]
+y <- mw[!is.na(mb) & !is.na(mw) & mwsrc != "FUNV"]
+x2 <- mb[!is.na(mb) & !is.na(mw) & (mb >= 3.5) & (mb <= 6.2) & mwsrc != "FUNV"] # Scordilis
+y2 <- mw[!is.na(mb) & !is.na(mw) & (mb >= 3.5) & (mb <= 6.2) & mwsrc != "FUNV"]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("mb", "mw", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$mb <- as.numeric(as.character(subFreqData$mb))
+subFreqData$mw <- as.numeric(as.character(subFreqData$mw))
+fit2 <- lm(mw ~ mb, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$mw, subFreqData$mb, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$mw, subFreqData$mb, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude de moment et la magnitude d'ondes de volume est :
+
+$M_{W}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $m_{b}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $m_{b}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $M_{W}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r com_w_b_SF`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+En utilisant la relation propos?e par Scordilis (2006, ?quation 22) pour calculer la magnitude de moment ? partir de la magnitude de volume en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y2 - 1.03 - 0.85 * x2)^2) / sum((y2 - mean(y2))^2), digits = 3)`
+
+En utilisant le mod?le lin?aire propos? par Di Giacomo *et al.* (2014, ?quation 2) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de volume en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y + 1.79 - 1.38 * x)^2) / sum((y - mean(y))^2), digits = 3)`
+
+En utilisant le mod?le exponentiel propos? par Di Giacomo *et al.* (2014, ?quation 2) pour calculer la magnitude de moment ? partir de la magnitude d'ondes de volume en utilisant les donn?es du catalogue CDSA, on obtient un coefficient de d?termination ?gal ? :
+
+$R^2$ = `r round(1 - sum((y - 4.555 - exp(0.859 * x - 4.664))^2) / sum((y - mean(y))^2), digits = 3)`
+
+La Figure 17 repr?sente les magnitudes de moment en fonction des magnitudes d'ondes de volume. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, la ligne bleue repr?sente le mod?le lin?aire propos? par Scordilis (2006), la ligne verte repr?sente le mod?le lin?aire propos? par Di Giacomo *et al*. (2014), la ligne jaune repr?sente le mod?le exponentiel propos? par Di Giacomo *et al.* (2014), et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, warning=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes de moment et les magnitudes d'ondes de volume (sans les donn?es de Funvisis)"}
+g2 <- ggplot(subFreqData, aes(x = mb, y = mw))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + geom_abline(intercept = 1.03, slope = 0.85, size = 1, colour = "blue")
+g2 <- g2 + geom_abline(intercept = -1.79, slope = 1.38, size = 1, colour = "green")
+g2 <- g2 + stat_function(fun = function(t) 4.555 + exp(0.859 * t - 4.664), size = 1, colour = "gold")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$mb), max(subFreqData$mb)), ylim = c(min(subFreqData$mw), max(subFreqData$mw)))
+g2 <- g2 + labs(title = "Comparaison entre magnitudes d'ondes de volume et de moment", x = "Magnitude d'ondes de volume", y = "Magnitude de moment")
+g2
+```
+
+Le mod?le de Scordilis (2006) appliqu? sur les donn?es du catalogue CDSA explique moins bien la relation entre magnitudes de moment et magnitudes d'ondes de volume que la r?gression lin?aire effectu?e dans cette ?tude. Cependant, le mod?le de Scordilis (2006) appliqu? aux donn?es du catalogue CDSA donne un r?sultat un peu meilleur que la r?gression effectu?e par Scordilis (2006) avec les donn?es de diff?rents catalogues internationaux. Le mod?le lin?aire de Di Giacomo *et al.* (2014) explique un peu moins bien la relation entre magnitudes de moment et magnitudes d'ondes de volume que la r?gression lin?aire effectu?e dans cette ?tude, mais il est meilleur que le mod?le propos? par Scordilis (2006). Enfin, le mod?le exponentiel de Di Giacomo *et al.* (2014) donne de tr?s mauvais r?sultats. Si on effectue les r?gressions lin?aires en ne tenant pas compte des magnitudes de moment fournies par Funvisis, tous les mod?les de r?gression sont meilleurs, ? l'exception du mod?le lin?aire de Di Giacomo *et al.* (2014). En particulier le mod?le exponentiel de Di Giacomo *et al* (2014) est bien meilleur. Il reste cependant moins bon que la r?gression lin?aire effectu?e dans cette ?tude.
+
+# Comparaison des magnitudes de dur?e et des magnitudes d'ondes de volume
+
+## Analyse des donn?es
+
+```{r, echo=FALSE}
+# Nombre de donn?es disponibles pour la r?gression
+com_b_TRN <- sum(!is.na(mb) & !is.na(md_TRN))
+com_b_FDF <- sum(!is.na(mb) & !is.na(md_FDF))
+com_b_RSPR <- sum(!is.na(mb) & !is.na(md_RSPR))
+```
+
+Il y a `r com_b_TRN` donn?es en commun entre la magnitude d'ondes de volume et la magnitude de dur?e de l'observatoire de Trinidad, `r com_b_FDF` donn?es en commun entre la magnitude d'ondes de volume et la magnitude de dur?e de l'observatoire de Fort-de-France, et `r com_b_RSPR` donn?es en commun entre la magnitude d'ondes de volume et la magnitude de dur?e de l'observatoire de Porto Rico.
+
+## R?gressions lin?aires
+
+### Comparaison entre les magnitudes d'ondes de volume et les magnitudes de dur?e fournies par Trinidad
+
+```{r, echo=FALSE}
+x <- md_TRN[!is.na(md_TRN) & !is.na(mb)]
+y <- mb[!is.na(md_TRN) & !is.na(mb)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("TRN", "mb", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$TRN <- as.numeric(as.character(subFreqData$TRN))
+subFreqData$mb <- as.numeric(as.character(subFreqData$mb))
+fit1 <- lm(mb ~ TRN, data = subFreqData, weights = freq)
+coeff1 <- summary(fit1)$coefficients
+R21 <- summary(fit1)$r.squared
+sigma1 <- summary(fit1)$sigma
+R21pred_CV <- R2crossvalid(subFreqData$mb, subFreqData$TRN, subFreqData$freq, 10)
+R21pred_BS <- R2bootstrap(subFreqData$mb, subFreqData$TRN, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude d'ondes de volume et la magnitude de dur?e est :
+
+$m_{b}$ = `r round(coeff1[2, 1], digits = 3)`(+- `r round(coeff1[2, 2], digits = 3)`) $M_{d, TRN}$ + `r round(coeff1[1, 1], digits = 3)`(+- `r round(coeff1[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, TRN}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $m_{b}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R21, digits = 3)`, $\sigma$ = `r round(sigma1, digits = 3)`, n = `r com_b_TRN`
+
+$R^2_{pred}$ = `r round(R21pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R21pred_BS, digits = 3)` (bootstrap)
+
+La Figure 18 repr?sente les magnitudes d'ondes de volume en fonction des magnitudes de dur?e fournies par l'observatoire de Trinidad. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes d'ondes de volume et les magnitudes de dur?e fournies par l'observatoire de Trinidad"}
+g1 <- ggplot(subFreqData, aes(x = TRN, y = mb))
+g1 <- g1 + scale_size(range = c(2, 20), guide = "none" )
+g1 <- g1 + geom_point(aes(colour = freq, size = freq))
+g1 <- g1 + scale_colour_gradient(low = "grey25", high = "white")                    
+g1 <- g1 + geom_abline(intercept = coef(fit1)[1], slope = coef(fit1)[2], size = 1, colour = "red")
+g1 <- g1 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g1 <- g1 + coord_cartesian(xlim = c(min(subFreqData$TRN), max(subFreqData$TRN)), ylim = c(min(subFreqData$mb), max(subFreqData$mb)))
+g1 <- g1 + labs(title = "Comparaison entre magnitudes de dur?e et d'ondes de volume", x = "Magnitude de dur?e TRN", y = "Magnitude d'ondes de volume")
+g1
+```
+
+### Comparaison entre les magnitudes d'ondes de volume et les magnitudes de dur?e fournies par Fort-de-France
+
+```{r, echo=FALSE}
+x <- md_FDF[!is.na(md_FDF) & !is.na(mb)]
+y <- mb[!is.na(md_FDF) & !is.na(mb)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("FDF", "mb", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$FDF <- as.numeric(as.character(subFreqData$FDF))
+subFreqData$mb <- as.numeric(as.character(subFreqData$mb))
+fit2 <- lm(mb ~ FDF, data = subFreqData, weights = freq)
+coeff2 <- summary(fit2)$coefficients
+R22 <- summary(fit2)$r.squared
+sigma2 <- summary(fit2)$sigma
+R22pred_CV <- R2crossvalid(subFreqData$mb, subFreqData$FDF, subFreqData$freq, 10)
+R22pred_BS <- R2bootstrap(subFreqData$mb, subFreqData$FDF, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude d'ondes de volume et la magnitude de dur?e est :
+
+$m_{b}$ = `r round(coeff2[2, 1], digits = 3)`(+- `r round(coeff2[2, 2], digits = 3)`) $M_{d, FDF}$ + `r round(coeff2[1, 1], digits = 3)`(+- `r round(coeff2[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, FDF}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $m_{b}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R22, digits = 3)`, $\sigma$ = `r round(sigma2, digits = 3)`, n = `r com_b_FDF`
+
+$R^2_{pred}$ = `r round(R22pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R22pred_BS, digits = 3)` (bootstrap)
+
+La Figure 19 repr?sente les magnitudes d'ondes de volume en fonction des magnitudes de dur?e fournies par l'observatoire de Fort-de-France. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes d'ondes de volume et les magnitudes de dur?e fournies par l'observatoire de Fort-de-France"}
+g2 <- ggplot(subFreqData, aes(x = FDF, y = mb))
+g2 <- g2 + scale_size(range = c(2, 20), guide = "none" )
+g2 <- g2 + geom_point(aes(colour = freq, size = freq))
+g2 <- g2 + scale_colour_gradient(low = "grey25", high = "white")                    
+g2 <- g2 + geom_abline(intercept = coef(fit2)[1], slope = coef(fit2)[2], size = 1, colour = "red")
+g2 <- g2 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g2 <- g2 + coord_cartesian(xlim = c(min(subFreqData$FDF), max(subFreqData$FDF)), ylim = c(min(subFreqData$mb), max(subFreqData$mb)))
+g2 <- g2 + labs(title = "Comparaison entre magnitudes de dur?e et d'ondes de volume", x = "Magnitude de dur?e FDF", y = "Magnitude d'ondes de volume")
+g2
+```
+
+### Comparaison entre les magnitudes d'ondes de volume et les magnitudes de dur?e fournies par Porto Rico
+
+```{r, echo=FALSE}
+x <- md_RSPR[!is.na(md_RSPR) & !is.na(mb)]
+y <- mb[!is.na(md_RSPR) & !is.na(mb)]
+freqData <- as.data.frame(table(x, y))
+names(freqData) <- c("RSPR", "mb", "freq")
+subFreqData <- subset(freqData, freq > 0)
+subFreqData$RSPR <- as.numeric(as.character(subFreqData$RSPR))
+subFreqData$mb <- as.numeric(as.character(subFreqData$mb))
+fit3 <- lm(mb ~ RSPR, data = subFreqData, weights = freq)
+coeff3 <- summary(fit3)$coefficients
+R23 <- summary(fit3)$r.squared
+sigma3 <- summary(fit3)$sigma
+R23pred_CV <- R2crossvalid(subFreqData$mb, subFreqData$RSPR, subFreqData$freq, 10)
+R23pred_BS <- R2bootstrap(subFreqData$mb, subFreqData$RSPR, subFreqData$freq, 50)
+```
+
+La relation entre la magnitude d'ondes de volume et la magnitude de dur?e est :
+
+$m_{b}$ = `r round(coeff3[2, 1], digits = 3)`(+- `r round(coeff3[2, 2], digits = 3)`) $M_{d, RSPR}$ + `r round(coeff3[1, 1], digits = 3)`(+- `r round(coeff3[1, 2], digits = 3)`)
+
+`r min(x, na.rm = TRUE)` < $M_{d, RSPR}$ < `r max(x, na.rm = TRUE)`
+
+`r min(y, na.rm = TRUE)` < $m_{b}$ < `r max(y, na.rm = TRUE)`
+
+$R^2$ = `r round(R23, digits = 3)`, $\sigma$ = `r round(sigma3, digits = 3)`, n = `r com_b_RSPR`
+
+$R^2_{pred}$ = `r round(R23pred_CV, digits = 3)` (validation crois?e), $R^2_{pred}$ = `r round(R23pred_BS, digits = 3)` (bootstrap)
+
+La Figure 20 repr?sente les magnitudes d'ondes de volume en fonction des magnitudes de dur?e fournies par l'observatoire de Porto Rico. La taille et la couleur des cercles sont proportionnelles au nombre d'observations. La ligne rouge repr?sente le mod?le lin?aire issu du catalogue CDSA, et la ligne en tirets gris repr?sente la premi?re diagonale.
+
+```{r, echo=FALSE, fig.height=4, fig.cap="Comparaison entre les magnitudes d'ondes de volume et les magnitudes de dur?e fournies par l'observatoire de Porto Rico"}
+g3 <- ggplot(subFreqData, aes(x = RSPR, y = mb))
+g3 <- g3 + scale_size(range = c(2, 20), guide = "none" )
+g3 <- g3 + geom_point(aes(colour = freq, size = freq))
+g3 <- g3 + scale_colour_gradient(low = "grey25", high = "white")                    
+g3 <- g3 + geom_abline(intercept = coef(fit3)[1], slope = coef(fit3)[2], size = 1, colour = "red")
+g3 <- g3 + geom_abline(intercept = 0, slope = 1, size = 1, linetype = "dashed", colour = "grey25")
+g3 <- g3 + coord_cartesian(xlim = c(min(subFreqData$RSPR), max(subFreqData$RSPR)), ylim = c(min(subFreqData$mb), max(subFreqData$mb)))
+g3 <- g3 + labs(title = "Comparaison entre magnitudes de dur?e et d'ondes de volume", x = "Magnitude de dur?e RSPR", y = "Magnitude d'ondes de volume")
+g3
+```
+
+Les mod?les lin?aires ne permettent pas tr?s bien d'expliquer la relation entre magnitudes d'ondes de volume et magnitudes de dur?e, en particulier pour les magnitudes de dur?e fournies par l'observatoire de Fort-de-France. De plus, le mod?le de r?gression obtenu ? l'aide des donn?es fournies par l'observatoire de Fort-de-France est tr?s diff?rent des deux mod?les obtenus ? l'aide des donn?es fournies par les deux autres observatoires. En revanche, le mod?le obtenu ? l'aide des donn?es fournies par l'observatoire de Trinidad est proche du mod?le obtenu ? l'aide des donn?es fournies par l'observatoire de Porto Rico.
+
+# Bibliographie
+
+Di Giacomo D., Bondar I., Storchak D.A., Engdahl E.R., Bormann P., Harris J. (2014) - ISC-GEM: Global instrumental earthquake catalogue (1900-2009), III. Re-computed $M_{S}$ and $m_{b}$, prox $M_{W}$, final magnitude composition and completeness assessment. *Physics of the Earth and Planetary Interiors* in press
+
+Drouet S., Bouin M.-P., Cotton F. (2011) - New moment magnitude scale, evidence of stress drop magnitude scaling and stochastic ground motion model for the French West Indies. *Geophysical Journal International* 187:1625-1644
+
+Scordilis E.M. (2006) - Empirical global relations converting $M_{S}$ and $m_{b}$ to moment magnitude. *Journal of Seismology* 10:225-236
+
+NB: To change the colors, look at http://sape.inf.usi.ch/quick-reference/ggplot2/colour
